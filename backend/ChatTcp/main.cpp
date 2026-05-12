@@ -1,3 +1,9 @@
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+#endif
+#include <clocale>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -5,11 +11,11 @@
 #include <mutex>
 #include <algorithm>
 #include <sstream>
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include <cstring>
+#include <cstdlib>
 #include "Room.h"
+
 using namespace std;
-#pragma comment(lib, "ws2_32.lib")
 
 vector<Room> rooms;
 mutex rooms_mutex;
@@ -17,10 +23,9 @@ mutex rooms_mutex;
 Room& getOrCreateRoom(const string& name, const string& password = "", int maxUsers = 100) {
     lock_guard<mutex> lock(rooms_mutex);
     for (auto& r : rooms) {
-        if (r.name == name)
-            return r;
+        if (r.name == name) return r;
     }
-    rooms.push_back({ name, password, maxUsers,{} });
+    rooms.push_back({ name, password, maxUsers, {} });
     return rooms.back();
 }
 
@@ -35,8 +40,12 @@ void cleanupEmptyRooms() {
     );
 }
 
-void handle_client(SOCKET client, string name) {
-    char buffer[1024];
+static void sendText(socket_t client, const string& text) {
+    send(client, text.c_str(), (int)text.size(), 0);
+}
+
+void handle_client(socket_t client, string name) {
+    char buffer[2048];
     Room* currentRoom = nullptr;
 
     while (true) {
@@ -45,18 +54,19 @@ void handle_client(SOCKET client, string name) {
             if (currentRoom) {
                 removeClient(*currentRoom, client);
                 string leave_msg = name + " покинув кімнату " + currentRoom->name;
-                broadcast(*currentRoom, leave_msg);
+                broadcast(*currentRoom, leave_msg, client);
                 currentRoom = nullptr;
                 cleanupEmptyRooms();
             }
-            closesocket(client);
-            cout << "Клієнт " << name << " відключився\n";
+            socket_close(client);
+            cout << "Клієнт " << name << " відключився" << endl;
             break;
         }
+
         buffer[bytes] = '\0';
         string cmd(buffer);
+        while (!cmd.empty() && (cmd.back() == '\n' || cmd.back() == '\r')) cmd.pop_back();
 
-        // ===== JOIN =====
         if (cmd.rfind("JOIN ", 0) == 0) {
             stringstream ss(cmd.substr(5));
             string roomName, password;
@@ -67,36 +77,30 @@ void handle_client(SOCKET client, string name) {
                 [&](Room& r) { return r.name == roomName; });
 
             if (it == rooms.end()) {
-                string err = "Помилка: Кімната " + roomName + " не існує";
-                send(client, err.c_str(), (int)err.size(), 0);
+                sendText(client, "Помилка: Кімната " + roomName + " не існує");
                 continue;
             }
 
             Room& room = *it;
 
             if (!room.password.empty() && room.password != password) {
-                string err = "Помилка: Невірний пароль для кімнати " + roomName;
-                send(client, err.c_str(), (int)err.size(), 0);
+                sendText(client, "Помилка: Невірний пароль для кімнати " + roomName);
                 continue;
             }
 
             if ((int)room.clients.size() >= room.maxUsers) {
-                string err = "Помилка: Кімната " + roomName + " переповнена (" +
-                    to_string(room.maxUsers) + " користувачів)";
-                send(client, err.c_str(), (int)err.size(), 0);
+                sendText(client, "Помилка: Кімната " + roomName + " переповнена (" +
+                    to_string(room.maxUsers) + " користувачів)");
                 continue;
             }
 
             currentRoom = &room;
             addClient(room, client, name);
 
-            string join_msg = "JOINED " + room.name;
-            send(client, join_msg.c_str(), (int)join_msg.size(), 0);
+            sendText(client, "JOINED " + room.name);
             broadcast(room, name + " приєднався до кімнати " + room.name, client);
             cout << name << " зайшов у " << room.name << endl;
         }
-
-        // ===== CREATE =====
         else if (cmd.rfind("CREATE ", 0) == 0) {
             string roomName, token2, token3;
             string password = "";
@@ -106,43 +110,34 @@ void handle_client(SOCKET client, string name) {
             ss >> roomName >> token2 >> token3;
 
             if (roomName.empty()) {
-                string err = "Помилка: треба вказати назву кімнати";
-                send(client, err.c_str(), (int)err.size(), 0);
+                sendText(client, "Помилка: треба вказати назву кімнати");
                 continue;
             }
 
             if (token3.empty()) {
                 if (token2.empty()) {
-                    string err = "Помилка: треба вказати кількість користувачів";
-                    send(client, err.c_str(), (int)err.size(), 0);
+                    sendText(client, "Помилка: треба вказати кількість користувачів");
                     continue;
                 }
-
                 if (!all_of(token2.begin(), token2.end(), ::isdigit)) {
-                    string err = "Помилка: кількість користувачів має бути числом";
-                    send(client, err.c_str(), (int)err.size(), 0);
+                    sendText(client, "Помилка: кількість користувачів має бути числом");
                     continue;
                 }
-
                 maxUsers = stoi(token2);
                 password = "";
             }
             else {
                 password = token2;
                 if (password == "-") password = "";
-
                 if (!all_of(token3.begin(), token3.end(), ::isdigit)) {
-                    string err = "Помилка: кількість користувачів має бути числом";
-                    send(client, err.c_str(), (int)err.size(), 0);
+                    sendText(client, "Помилка: кількість користувачів має бути числом");
                     continue;
                 }
-
                 maxUsers = stoi(token3);
             }
 
             if (maxUsers < 1 || maxUsers > 100) {
-                string err = "Помилка: кількість користувачів має бути від 1 до 100";
-                send(client, err.c_str(), (int)err.size(), 0);
+                sendText(client, "Помилка: кількість користувачів має бути від 1 до 100");
                 continue;
             }
 
@@ -152,8 +147,7 @@ void handle_client(SOCKET client, string name) {
                     [&](Room& r) { return r.name == roomName; });
 
                 if (it != rooms.end()) {
-                    string err = "Помилка: Кімната з назвою " + roomName + " вже існує";
-                    send(client, err.c_str(), (int)err.size(), 0);
+                    sendText(client, "Помилка: Кімната з назвою " + roomName + " вже існує");
                     continue;
                 }
             }
@@ -161,16 +155,12 @@ void handle_client(SOCKET client, string name) {
             currentRoom = &getOrCreateRoom(roomName, password, maxUsers);
             addClient(*currentRoom, client, name);
 
-            string join_msg = "JOINED " + roomName;
-            send(client, join_msg.c_str(), (int)join_msg.size(), 0);
+            sendText(client, "JOINED " + roomName);
 
             cout << "[SERVER] Кімната " << roomName
                 << (password.empty() ? " (публічна)" : " (приватна)")
                 << " створена користувачем " << name << endl;
         }
-
-
-        // ===== LIST =====
         else if (cmd == "LIST") {
             lock_guard<mutex> lock(rooms_mutex);
             string list_msg = "Доступні кімнати:\n";
@@ -179,27 +169,21 @@ void handle_client(SOCKET client, string name) {
                 if (!r.password.empty()) list_msg += " (приватна)";
                 list_msg += " (" + to_string(r.clients.size()) + "/" + to_string(r.maxUsers) + ")\n";
             }
-            send(client, list_msg.c_str(), (int)list_msg.size(), 0);
+            sendText(client, list_msg);
         }
-
-        // ===== LEAVE =====
         else if (cmd == "LEAVE") {
             if (currentRoom) {
                 removeClient(*currentRoom, client);
-                string leave_msg = "Ви покинули кімнату " + currentRoom->name;
-                send(client, leave_msg.c_str(), (int)leave_msg.size(), 0);
-                broadcast(*currentRoom, name + " покинув кімнату " + currentRoom->name);
+                sendText(client, "Ви покинули кімнату " + currentRoom->name);
+                broadcast(*currentRoom, name + " покинув кімнату " + currentRoom->name, client);
                 cout << "[SERVER] " << name << " покинув " << currentRoom->name << endl;
                 currentRoom = nullptr;
                 cleanupEmptyRooms();
             }
             else {
-                string err = "Помилка: Ви не в кімнаті";
-                send(client, err.c_str(), (int)err.size(), 0);
+                sendText(client, "Помилка: Ви не в кімнаті");
             }
         }
-
-        // ===== MESSAGE =====
         else {
             if (currentRoom) {
                 string msg = name + ": " + cmd;
@@ -207,38 +191,67 @@ void handle_client(SOCKET client, string name) {
                 broadcast(*currentRoom, msg, client);
             }
             else {
-                string warn = "Помилка: Ви не в кімнаті, перед тим як писати повідомлення зайдіть в кімнату";
-                send(client, warn.c_str(), (int)warn.size(), 0);
+                sendText(client, "Помилка: Ви не в кімнаті, перед тим як писати повідомлення зайдіть в кімнату");
             }
         }
     }
 }
 
 int main() {
+
+#ifdef _WIN32
     SetConsoleCP(CP_UTF8);
     SetConsoleOutputCP(CP_UTF8);
+    _setmode(_fileno(stdout), _O_U8TEXT);
+    _setmode(_fileno(stdin), _O_U8TEXT);
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
 
-    SOCKET server = socket(AF_INET, SOCK_STREAM, 0);
+#endif
+
+    setlocale(LC_ALL, "");
+
+    socket_t server = socket(AF_INET, SOCK_STREAM, 0);
+    if (!socket_valid(server)) {
+        cerr << "Не вдалося створити socket\n";
+        return 1;
+    }
+
+    int opt = 1;
+    setsockopt(server, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(8080);
+
+    int port = getenv("PORT") ? atoi(getenv("PORT")) : 8080;
+    addr.sin_port = htons(port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    bind(server, (sockaddr*)&addr, sizeof(addr));
-    listen(server, 5);
+    if (bind(server, (sockaddr*)&addr, sizeof(addr)) < 0) {
+        cerr << "bind failed\n";
+        socket_close(server);
+        return 1;
+    }
+
+    if (listen(server, 5) < 0) {
+        cerr << "listen failed\n";
+        socket_close(server);
+        return 1;
+    }
+
     {
         lock_guard<mutex> lock(rooms_mutex);
-        rooms.push_back({ "general","",100,{} });
+        rooms.push_back({ "general", "", 100, {} });
     }
-    cout << "Сервер запущено на порту 8080...\n";
+
+    cout << "Сервер запущено на порту " << port << "...\n";
 
     while (true) {
         sockaddr_in client_addr{};
-        int client_size = sizeof(client_addr);
-        SOCKET client = accept(server, (sockaddr*)&client_addr, &client_size);
+        socklen_t client_size = sizeof(client_addr);
+
+        socket_t client = accept(server, (sockaddr*)&client_addr, &client_size);
+        if (!socket_valid(client)) continue;
 
         char ip_str[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &client_addr.sin_addr, ip_str, sizeof(ip_str));
@@ -250,6 +263,7 @@ int main() {
         if (name_len > 0) {
             name_buf[name_len] = '\0';
             name = string(name_buf);
+            while (!name.empty() && (name.back() == '\n' || name.back() == '\r')) name.pop_back();
         }
         else {
             name = client_ip;
@@ -259,6 +273,11 @@ int main() {
         thread(handle_client, client, name).detach();
     }
 
-    closesocket(server);
+    socket_close(server);
+
+#ifdef _WIN32
     WSACleanup();
+#endif
+
+    return 0;
 }
