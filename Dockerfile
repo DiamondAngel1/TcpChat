@@ -24,7 +24,6 @@ COPY --from=node-builder /app/frontend/dist ./frontend/dist
 COPY --from=node-builder /app/proxy ./proxy
 COPY --from=node-builder /app/backend ./backend
 
-Ensure server is executable
 RUN if [ -f ./backend/server]; then chmod +x ./backend/server; 
 EXPOSE 10000
 COPY start.sh /app/start.sh
