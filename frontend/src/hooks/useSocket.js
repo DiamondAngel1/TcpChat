@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { WS_URL } from '../proxy'
 
 export function useSocket({ onMessage, onOpen, onClose } = {}) {
     const wsRef = useRef(null)
@@ -7,21 +8,20 @@ export function useSocket({ onMessage, onOpen, onClose } = {}) {
 
     const connect = useCallback((name) => {
         if (!name || connectingRef.current || wsRef.current) return
-
         connectingRef.current = true
-        const ws = new WebSocket(import.meta.env.VITE_WS_URL)
+
+        const ws = new WebSocket(WS_URL)
         wsRef.current = ws
 
         ws.onopen = () => {
             connectingRef.current = false
             setConnected(true)
+// перша відправка імені клієнта (як у backend)
             ws.send(name)
             onOpen?.()
         }
 
-        ws.onmessage = (event) => {
-            onMessage?.(String(event.data))
-        }
+        ws.onmessage = (event) => onMessage?.(String(event.data))
 
         ws.onclose = () => {
             connectingRef.current = false
@@ -50,16 +50,10 @@ export function useSocket({ onMessage, onOpen, onClose } = {}) {
         if (!ws) return
         wsRef.current = null
         connectingRef.current = false
-        if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) {
-            ws.close()
-        }
+        if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) ws.close()
     }, [])
 
-    useEffect(() => {
-        return () => {
-            close()
-        }
-    }, [close])
+    useEffect(() => () => close(), [close])
 
     return { connect, send, close, connected }
 }

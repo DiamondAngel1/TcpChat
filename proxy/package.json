@@ -1,0 +1,11 @@
+{
+  "name": "ws-proxy",
+  "type": "module",
+  "scripts": {
+    "start": "node proxy.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "dotenv": "^16.4.5"
+  }
+}

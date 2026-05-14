@@ -4,15 +4,19 @@ import dotenv from 'dotenv'
 
 dotenv.config()
 
-const WS_PORT = process.env.WS_PORT || 8081
-const TCP_HOST = process.env.TCP_HOST || '127.0.0.1'
-const TCP_PORT = Number(process.env.TCP_PORT || 8082)
+const WS_PORT = Number(process.env.PORT || 8081)
+const TCP_HOST = process.env.TCP_HOST
+const TCP_PORT = Number(process.env.TCP_PORT)
 
-const wss = new WebSocketServer({ port: WS_PORT })
+if (!TCP_HOST || !TCP_PORT) {
+    console.error('TCP_HOST або TCP_PORT не задані')
+    process.exit(1)
+}
+
+const wss = new WebSocketServer({ port: WS_PORT, host: '0.0.0.0' })
 
 wss.on('connection', (ws) => {
     const tcp = net.createConnection({ host: TCP_HOST, port: TCP_PORT })
-
     let buffered = ''
 
     ws.on('message', (data) => {
@@ -49,5 +53,5 @@ wss.on('connection', (ws) => {
     })
 })
 
-console.log(`WebSocket proxy запущено на ws://127.0.0.1:${WS_PORT}`)
+console.log(`WebSocket proxy запущено на port ${WS_PORT}`)
 console.log(`Підключення до TCP сервера: ${TCP_HOST}:${TCP_PORT}`)
